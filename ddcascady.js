@@ -1,11 +1,22 @@
 ﻿(function ($) {
-    
+
+    "use strict";
+
     $.fn.ddCascady = function (options) {
         var settings = $.extend({
             service: null,
             method: "POST",
-            firstElementOrderNumber: 0
+            firstElementOrderNumber: 0,
+            loadAll: false                  // true means user want to load all drop-downs because they contain already selected values
         }, options);
+
+        var loadingInProgress = settings.loadAll;
+        var self = this;
+
+        if (loadingInProgress) {
+            // Disable all elements and wait till they are all populated
+            this.prop("disabled", true);
+        }
 
         if (typeof settings.service !== "string" || settings.service === "") {
             throw new Error("Ajax service has to be provided");
@@ -31,14 +42,27 @@
             }
         }
 
-        return this.each(function () {
+        // values which are used to polulate all drop down lists
+        var optionsToLoad = [];
+        var dropDownControlLoaded = null;       // Deferred object which is resolved when a drop down has been populated
+
+        this.each(function () {
             var $this = $(this),
                 order = $this.data("order"),
                 isRoot = order === settings.firstElementOrderNumber;
 
+            // Save value for future realod
+            if (settings.loadAll) {
+                optionsToLoad[order] = $this.val();
+            }
+
             // Cleanup all drop down's except the root one
 
-            if (!isRoot) {
+            if (isRoot) {
+                controls.root = order;
+                $this.val("");
+            }
+            else if (!isRoot && !loadingInProgress) {
                 $this.empty();
             }
 
@@ -64,11 +88,14 @@
 
                 // Clean up drop down elements
 
-                var subs = controls.findAllAfter(order);
-                for (var i = 0; i < subs.length; i++) {
-                    var sub = subs[i];
-                    controls[sub].$element.empty();
+                if (!loadingInProgress) {
+                    var subs = controls.findAllAfter(order);
+                    for (var i = 0; i < subs.length; i++) {
+                        var sub = subs[i];
+                        controls[sub].$element.empty();
+                    }
                 }
+                
 
                 // Prepare query to the service
 
@@ -93,8 +120,21 @@
                     var firstSub = controls.findFirstAfter(order);
                     var sub = controls[firstSub];
 
+                    if (!sub) {
+                        // We already selected values in all drop-downs. Raise loaded event.
+                        if (dropDownControlLoaded != null) {
+                            dropDownControlLoaded.reject();
+                        }
+                        
+                        return;
+                    }
+
                     if (!data.hasOwnProperty(sub.json)) {
                         throw new Error(sub.json + " is not found in service response");
+                    }
+
+                    if (loadingInProgress) {
+                        sub.$element.empty();
                     }
 
                     var el = sub.element;
@@ -108,9 +148,62 @@
                         el.options.add(option);
                     }
 
+                    self.trigger("loaded", [ el ]);
+
+                    if (dropDownControlLoaded !== null) {
+                        dropDownControlLoaded.resolve(sub);
+                    }
                 });
             });
         });
+
+        if (settings.loadAll && optionsToLoad.length > 0) {
+            // Load all drop downs
+
+            var optionsCounter = 0;
+
+            var loadDropDown = function (control, valueId) {
+                if (valueId >= optionsToLoad.length) {
+                    return;
+                }
+
+                var value = optionsToLoad[valueId]
+                control.$element.val(value).change();
+            }
+
+            var initDropDownControlLoaded = function() {
+                dropDownControlLoaded = $.Deferred();
+
+                dropDownControlLoaded.done(function (justLoadedControl) {
+                    // $.Deferred could be used only once. Let's reinitialize shared dropDownControlLoaded
+                    // deferred object
+
+                    initDropDownControlLoaded();
+
+                    // Populate the next drop down on the cascade
+
+                    optionsCounter++;
+                    loadDropDown(justLoadedControl, optionsCounter);
+                }).fail(function () {
+                    // All drop downs has been loaded. Notify client code using loaded event.
+
+                    self.prop("disabled", false);
+                    loadingInProgress = false;
+                    self.trigger("ready");
+                });
+            }
+
+            // Start drop downs loading from the root control
+
+            initDropDownControlLoaded();
+            
+            var root = controls[controls.root];
+            if (root) {
+                loadDropDown(root, optionsCounter);
+            }
+        }
+
+        return this;
     };
 
 })(jQuery);
